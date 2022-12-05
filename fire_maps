@@ -1,0 +1,221 @@
+
+import pandas as pd
+
+large_fires = pd.read_csv('large_fires_altair_demo.csv', dtype={'COUNTY': str, 'FIRE_YEAR': str})
+
+large_fires.shape
+
+large_fires.head()
+
+We will first need to clean up the "FIRE_YEAR" column because the entries are inconsistent. As an example "05" really means "2005" and "95" stands for "1995".
+
+large_fires['FIRE_YEAR'].unique()
+
+from datetime import datetime
+
+def clean_year_column(entry):
+    if len(entry)==4:
+        return int(entry)
+    return datetime.strptime(entry, '%y').year
+
+clean_year_column('19')
+
+large_fires['FIRE_YEAR'] = large_fires['FIRE_YEAR'].apply(clean_year_column)
+
+large_fires.head()
+
+Let's start with some Altair visualizations now.
+
+## Altair basics
+
+[Altair](https://altair-viz.github.io/) is a visualization library for Python, based on Vega and Vega-Lite, which are powerful visualization grammars that allow us to generate both static images or interactive web-based views. Altair’s API is simple and enables you to create beautiful and effective visualizations with a minimal amount of code.
+
+
+
+import altair as alt
+
+just_plot_cal=large_fires[large_fires['STATE_AB']=='CA']
+
+We will first focus on fires in California. So let's make a dataframe with only those incidents.
+
+large_ca_fires = large_fires[large_fires['STATE_AB']=='CA']
+
+large_ca_fires.head()
+
+Let's start by making a simple scatter plot. 
+
+### The `Chart()` object
+
+The primary class used in Altair is `Chart()`, upon which marks, encodings, and interactivity can be applied.
+
+Note that in Altair, calling a method on a `Chart` object returns another `Chart` object, meaning that methods can be "chained" together. We'll tell Altair to make **point**  marks, and give it an **encoding** specifying which feature should be shown in each axis, as well as which feature should control the color of the points.
+
+scatter = alt.Chart(large_ca_fires) \
+             .mark_point() \
+             .encode(
+                x='DISCOVERY_DOY',
+                y='FIRE_SIZE',
+                color='FIRESIZECLASS')
+
+scatter
+
+scatter = alt.Chart(large_ca_fires) \
+             .mark_point() \
+             .encode(
+                x='DISCOVERY_DOY',
+                y='FIRE_SIZE',
+                color='FIRESIZECLASS')\
+                .interactive()
+
+scatter
+
+In general, creating a chart in Altair involves the following steps:
+   * specify a data source (a pandas DataFrame)
+   * choose a type of mark (e.g. lines, points)
+   * specify an *encoding* (set axes, visual cues)
+   * define interactivity
+   
+   
+We've done the first three steps already. We can add some basic pan/zoom interactivity to Altair by adding `.interactive()` to our chart. And let's also add the tooltip and a plot title.
+
+scatter = alt.Chart(large_ca_fires) \
+             .mark_point() \
+             .encode(
+                x='DISCOVERY_DOY',
+                y='FIRE_SIZE',
+                color='FIRESIZECLASS',
+                tooltip=['LATITUDE', 'LONGITUDE'])  \
+             .properties(title='California fire size vs day of year') \
+             .interactive()
+
+scatter
+
+We can also easily create a bar plot with Altair. Let's make a histogram of across the different fires classes of California fires.
+
+hist = alt.Chart(large_ca_fires) \
+          .mark_bar() \
+          .encode(
+                x='FIRESIZECLASS',
+                y='count()',
+                tooltip=['count()', 'FIRECLASSDESCR']) \
+          .properties(
+                width=300,
+                title='Histogram of California fire classes')
+
+hist
+
+Or we can look at the number of California fires over the years.
+
+over_years = alt.Chart(large_ca_fires) \
+                .mark_line(point=True) \
+                .encode(
+                    x='FIRE_YEAR:N',
+                    y='count()',
+                    tooltip=['count()', 'FIRE_YEAR']) \
+                .properties(
+                    width=500,
+                    title='Number of California fires larger than 100 acres over the years')
+
+over_years
+
+## Making geospatial plots with Altair
+
+When plotting geospatial data we often want the background map of the area plotted. For our purpose we will use the outline of the US states. We can for example get the data for this from the `vega_datasets` like so:
+
+from vega_datasets import data
+states = alt.topo_feature(data.us_10m.url, feature='states')
+
+Let's plot the states with Altair!
+
+background = alt.Chart(states) \
+                .mark_geoshape(
+                    fill='lightgray',
+                    stroke='black',
+                    strokeWidth=1) \
+                .project('albersUsa') \
+                .properties(
+                    width=600,
+                    height=400)
+
+background
+
+Let's add California fires data to this plot.
+
+points = alt.Chart(large_ca_fires) \
+            .mark_circle() \
+            .encode(
+                longitude='LONGITUDE',
+                latitude='LATITUDE',
+                size=alt.Size('FIRE_SIZE', scale=alt.Scale(domain=(5000, 300000))),
+                tooltip=['FIRE_SIZE', 'LATITUDE', 'LONGITUDE'])
+
+background + points
+
+## Adding an interactive slider
+
+Now let's plot only fires for each year and add a slider that selects the year being plotted.
+
+slider = alt.binding_range(min=1992, max=2015, step=1)
+select_year = alt.selection_single(name="FIRE_YEAR", fields=['FIRE_YEAR'],
+                                   bind=slider, init={'FIRE_YEAR': 2000})
+
+points = alt.Chart(large_ca_fires) \
+            .mark_circle() \
+            .encode(
+                longitude='LONGITUDE',
+                latitude='LATITUDE',
+                size=alt.Size('FIRE_SIZE', scale=alt.Scale(domain=(5000, 300000))),
+                tooltip=['FIRE_SIZE', 'LATITUDE', 'LONGITUDE']) \
+            .add_selection(select_year)\
+            .transform_filter(select_year)
+
+background + points
+
+## Altair Choropleth Map
+
+Let's go back to the data for the entire US and plot the map where we color each state depending on the number of fires that occured in the state on a given year. First we will perpare the data.
+
+large_by_state = large_fires.groupby(['STATE', 'FIRE_YEAR']).size()
+large_by_state = large_by_state.unstack(fill_value=0).stack().reset_index(name='COUNT')
+
+large_by_state
+
+In order for Altair to color each state according to the count of fires in that state, each state needs to have an "id" associate with it which corresponds to the choropleth data "id" column. To bring the correct state "id" to each row, we will use this helper dataframe:
+
+state_ds = pd.read_csv('state_ids.csv')
+
+state_ds.head()
+
+large_by_state = pd.merge(large_by_state, state_ds, left_on='STATE', right_on='state').drop(columns = 'state')
+
+large_by_state.head()
+
+Now, we're ready to generate the plot.
+
+slider = alt.binding_range(min=1992, max=2015, step=1)
+select_year = alt.selection_single(name="FIRE_YEAR", fields=['FIRE_YEAR'],
+                                   bind=slider, init={'FIRE_YEAR': 2000})
+
+
+fires_us = alt.Chart(large_by_state)  \
+              .mark_geoshape(
+                    stroke='black',
+                    strokeWidth=0.2)\
+              .project('albersUsa')\
+              .encode(
+                    color=alt.Color('COUNT:Q', scale=alt.Scale(domain=(0, 350))),
+                    tooltip=['COUNT:Q', 'STATE:N']) \
+              .transform_lookup(
+                    lookup='id',
+                    from_=alt.LookupData(states, key='id',
+                    fields=["type", "properties", "geometry"])) \
+              .add_selection(select_year)\
+              .transform_filter(select_year)\
+              .properties(
+                    width=600,
+                    height=400,
+                    title='State by state number of fires larger than 100 acres over the years')
+
+fires_us
+
+
